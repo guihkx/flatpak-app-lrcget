@@ -1,0 +1,338 @@
+name: Flatpak
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - '**.md'
+    tags-ignore:
+      - '**'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+jobs:
+  build-n-bundle:
+    name: Build & Bundle
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x86_64
+          - aarch64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install helpful tools
+        run: |
+          sudo apt update
+          sudo apt install flatpak-builder xmlstarlet
+
+      - name: Extract details about the app
+        id: details
+        run: |
+          set -x
+          shopt -s nullglob
+          shopt -s nocaseglob
+          for manifest in *.json *.yml *.yaml
+          do
+            id=$(yq -r 'select(tag == "!!map") | .id // .app-id // ""' "${manifest}")
+            if [ -n "${id}" ]
+            then
+              branch=$(yq -r '.branch // .default-branch // "master"' "${manifest}")
+              echo "app_id=${id}" >> "${GITHUB_OUTPUT}"
+              echo "manifest=${manifest}" >> "${GITHUB_OUTPUT}"
+              echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
+              echo "Found app-id '${id}' in '${manifest}' (branch: '${branch}')."
+              exit 0
+            fi
+          done
+          echo 'Unable to find a valid Flatpak manifest.'
+          exit 1
+
+      - name: Show path of Flatpak manifest
+        run: echo '${{ steps.details.outputs.manifest }}'
+
+      - name: Show Flatpak app id
+        run: echo '${{ steps.details.outputs.app_id }}'
+
+      - name: Install Flatpak
+        run: |
+          sudo apt update
+          sudo apt install flatpak
+
+      - name: Show version of Flatpak
+        run: flatpak --version
+
+      - name: Restore Flatpak build tools from cache
+        uses: actions/cache/restore@v4
+        with:
+          key: flatpak-tools-${{ matrix.arch }}-${{ github.run_id }}
+          path: ~/.local/share/flatpak
+          restore-keys: |
+            flatpak-tools-${{ matrix.arch }}
+
+      - name: Install or update Flatpak build tools
+        run: |
+          flatpak --user remote-add \
+            --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install \
+            --noninteractive \
+            --or-update \
+            flathub \
+            org.flatpak.Builder \
+            org.flathub.flatpak-external-data-checker
+
+      - name: Save Flatpak build tools to cache
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          key: flatpak-tools-${{ matrix.arch }}-${{ github.run_id }}
+          path: ~/.local/share/flatpak
+
+      - name: Show version of flatpak-builder
+        run: flatpak-builder --version
+
+      - name: Validate manifest
+        run: |
+          set -x
+          if [ -f 'linter-exceptions.json' ]
+          then
+            flatpak run --command=flatpak-builder-lint \
+              org.flatpak.Builder \
+              --user-exceptions linter-exceptions.json \
+              --exceptions manifest '${{ steps.details.outputs.manifest }}'
+          else
+            flatpak run --command=flatpak-builder-lint \
+              org.flatpak.Builder \
+              --exceptions manifest '${{ steps.details.outputs.manifest }}'
+          fi
+
+      - name: Validate flatpak-external-data-checker settings
+        run: |
+          flatpak run org.flathub.flatpak-external-data-checker \
+            '${{ steps.details.outputs.manifest }}'
+
+      - name: Set up QEMU
+        if: matrix.arch != 'x86_64' && matrix.arch != 'aarch64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.arch }}
+
+      - name: Restore Flatpak build directory from cache
+        uses: actions/cache/restore@v4
+        with:
+          key: flatpak-build-dir-${{ matrix.arch }}-${{ github.run_id }}
+          path: .flatpak-builder
+          restore-keys: |
+            flatpak-build-dir-${{ matrix.arch }}
+
+      - name: Build (${{ matrix.arch }})
+        run: |
+          dbus-run-session flatpak-builder \
+            --arch ${{ matrix.arch }} \
+            --build-only \
+            --delete-build-dirs \
+            --force-clean \
+            --install-deps-from flathub \
+            --sandbox \
+            --user \
+            --verbose \
+            builddir/ \
+            '${{ steps.details.outputs.manifest }}'
+
+      - name: Save Flatpak build directory to cache
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          key: flatpak-build-dir-${{ matrix.arch }}-${{ github.run_id }}
+          path: .flatpak-builder
+
+      - name: Recursively list files in builddir
+        run: tree -fhv builddir
+
+      - name: Update AppStream release version
+        id: version
+        run: |
+          set -x
+          for appdata in builddir/*/share/appdata/*.appdata.xml \
+                         builddir/*/share/metainfo/*.appdata.xml \
+                         builddir/*/share/metainfo/*.metainfo.xml
+          do
+            if [ ! -f "${appdata}" ]
+            then
+              echo "AppStream xml in '${appdata}' does not exist or is not readable. Ignoring."
+              continue
+            fi
+            version=$(xmlstarlet select \
+              --template \
+              --value-of '/component/releases/release[1]/@version' \
+              "${appdata}"
+            )
+            echo "Found version '${version}' in '${appdata}'."
+            tag="$(git describe --tags HEAD | sed -r 's/^v//')"
+            if [ -n "${tag}" ]
+            then
+              updated_version="${tag}"
+            else
+              n_commits=$(git rev-list --count HEAD)
+              short_sha=$(git rev-parse --short HEAD)
+              updated_version=$(printf '%s+r%s+g%s' "${version}" "${n_commits}" "${short_sha}")
+            fi
+            xmlstarlet edit \
+              --inplace \
+              --update '/component/releases/release[1]/@version' \
+              --value "${updated_version}" \
+              "${appdata}"
+            echo "value=${updated_version}" >> "${GITHUB_OUTPUT}"
+            echo "Successfully updated version to: '${updated_version}'."
+          done
+
+      - name: Finish build (${{ matrix.arch }})
+        run: |
+          dbus-run-session flatpak-builder \
+            --arch ${{ matrix.arch }} \
+            --finish-only \
+            --repo repo/ \
+            --verbose \
+            builddir/ \
+            '${{ steps.details.outputs.manifest }}'
+
+      - name: Validate build
+        run: |
+          set -x
+          if [ -f 'linter-exceptions.json' ]
+          then
+            flatpak run --command=flatpak-builder-lint \
+              org.flatpak.Builder \
+              --user-exceptions linter-exceptions.json \
+              --exceptions repo repo
+          else
+            flatpak run --command=flatpak-builder-lint \
+              org.flatpak.Builder \
+              --exceptions repo repo
+          fi
+
+      - name: Extract the name of the app
+        id: name
+        run: |
+          set -x
+          for appdata in builddir/*/share/appdata/'${{ steps.details.outputs.app_id }}'.appdata.xml \
+                         builddir/*/share/metainfo/'${{ steps.details.outputs.app_id }}'.appdata.xml \
+                         builddir/*/share/metainfo/'${{ steps.details.outputs.app_id }}'.metainfo.xml
+          do
+            name=$(xmlstarlet select \
+              --template \
+              --value-of '/component/name[not(@xml:lang)]' \
+              "${appdata}" |
+              tr '[:upper:]' '[:lower:]' |
+              tr '[:blank:]' '_'
+            )
+            if [ -n "${name}" ]
+            then
+              break
+            fi
+          done
+          if [ -z "${name}" ]
+          then
+            echo 'Failed to extract the name of the app, will use "my_flatpak_app" instead.'
+            name='my_flatpak_app'
+          fi
+          echo "value=${name}" >> "${GITHUB_OUTPUT}"
+
+      # TODO: Remove this step once flatpak-builder's --finish-only cleans up correctly:
+      # https://github.com/flatpak/flatpak-builder/issues/14
+      - name: (WORKAROUND) Rebuild (${{ matrix.arch }})
+        run: |
+          dbus-run-session flatpak-builder \
+            --arch ${{ matrix.arch }} \
+            --delete-build-dirs \
+            --force-clean \
+            --install-deps-from flathub \
+            --sandbox \
+            --user \
+            --repo repo/ \
+            --verbose \
+            builddir/ \
+            '${{ steps.details.outputs.manifest }}'
+
+      - name: Recursively list files in builddir
+        run: tree -I debug/ -fhv builddir
+
+      - name: Bundle app (${{ matrix.arch }})
+        run: |
+          flatpak build-bundle \
+            --arch ${{ matrix.arch }} repo/ \
+            '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.flatpak' \
+            '${{ steps.details.outputs.app_id }}' \
+            '${{ steps.details.outputs.branch }}'
+
+      - name: Upload app (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          path: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.flatpak'
+          name: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}'
+
+      - name: Bundle locale files (${{ matrix.arch }})
+        run: |
+          flatpak build-bundle \
+            --arch ${{ matrix.arch }} repo/ \
+            --runtime \
+            '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Locale.flatpak' \
+            "$(echo '${{ steps.details.outputs.app_id }}' | tr -- '-' '_').Locale" \
+            '${{ steps.details.outputs.branch }}' || true
+
+      - name: Upload locale files (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          path: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Locale.flatpak'
+          name: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Locale'
+
+      - name: Bundle debug symbols (${{ matrix.arch }})
+        run: |
+          flatpak build-bundle \
+            --arch ${{ matrix.arch }} repo/ \
+            --runtime \
+            '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Debug.flatpak' \
+            "$(echo '${{ steps.details.outputs.app_id }}' | tr -- '-' '_').Debug" \
+            '${{ steps.details.outputs.branch }}' || true
+
+      - name: Upload debug symbols (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          path: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Debug.flatpak'
+          name: '${{ steps.name.outputs.value }}_${{ steps.version.outputs.value }}-${{ matrix.arch }}.Debug'
+
+  publish-release:
+    name: Publish Release
+    if: github.event_name == 'release'
+    needs:
+      - build-n-bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts from previous jobs
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: artifacts/*/*
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
