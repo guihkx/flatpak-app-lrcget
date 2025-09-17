@@ -38,8 +38,8 @@ modules:
       - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/LRCGET.png
     sources:
       - type: git
-        url: https://github.com/guihkx/lrcget.git
-        commit: 2d16de12f7686f820f6766e105c083a65cadb5f0
+        url: https://github.com/tranxuanthang/lrcget.git
+        commit: 86135e310e47f7c33f715eebb64af21a48c78917
         x-checker-data:
           type: git
           tag-pattern: ^([\d.]+)$
