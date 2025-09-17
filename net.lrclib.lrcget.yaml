@@ -28,7 +28,7 @@ modules:
         XDG_CACHE_HOME: /run/build/lrcget/flatpak-node/cache
         npm_config_cache: /run/build/lrcget/flatpak-node/npm-cache
     build-commands:
-      - npm --offline install --prefix=lrcget
+      - npm --offline install
       - install -Dm644 cargo/config .cargo/config.toml
       - cargo fetch --manifest-path src-tauri/Cargo.toml --verbose
       - npm --offline run tauri build --no-bundle
