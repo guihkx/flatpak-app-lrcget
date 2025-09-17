@@ -1,4 +1,4 @@
-# Scripts to help automate the generation of cargo-sources.json, node-sources.json and yarn.lock.
+# Scripts to help automate the generation of cargo-sources.json and node-sources.json.
 # Simply run: just
 
 manifest_file := 'net.lrclib.lrcget.yaml'
@@ -19,7 +19,7 @@ check-deps:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    deps=('git' 'yq' 'poetry' 'curl' 'yarn')
+    deps=('git' 'yq' 'poetry' 'curl')
     missing=()
 
     echo 'Checking dependencies...'
@@ -73,7 +73,7 @@ generate-cargo-sources:
     poetry -C '{{tools_dir}}/cargo' run ./flatpak-cargo-generator.py -o '{{justfile_directory()}}/{{cargo_sources}}' "$temp_cargo_lock"
     echo '{{cargo_sources}} generated successfully'
 
-# Generate Node sources (node-sources.json and yarn.lock)
+# Generate Node sources (node-sources.json and package-lock.json)
 generate-node-sources:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -90,24 +90,20 @@ generate-node-sources:
         exit 1
     fi
 
-    echo "Will generate node-sources.json and yarn.lock for commit: $commit_hash"
+    echo "Will generate node-sources.json for commit: $commit_hash"
 
     echo 'Installing dependencies for flatpak-node-generator...'
     poetry -C '{{tools_dir}}/node' install --quiet --without dev
 
-    package_dir="$(mktemp -d --suffix=_package.json)"
-    trap "rm -rf '$package_dir'" EXIT
-    echo "Created temporary directory for the package.json: $package_dir"
+    package_lock_dir="$(mktemp -d --suffix=_package-lock.json)"
+    trap "rm -rf '$package_lock_dir'" EXIT
+    echo "Created temporary directory for the package-lock.json: $package_lock_dir"
 
-    package_json_url="{{upstream_repo}}/raw/$commit_hash/package.json"
-    echo "Downloading package.json: $package_json_url"
-    curl -fsSL "$package_json_url" -o "$package_dir/package.json"
-
-    echo "Running 'yarn install' to generate yarn.lock..."
-    yarn install --cwd "$package_dir" --no-progress --silent 2> >(grep -v warning 1>&2)
+    package_lock_json_url="{{upstream_repo}}/raw/$commit_hash/package-lock.json"
+    echo "Downloading package-lock.json: $package_lock_json_url"
+    curl -fsSL "$package_lock_json_url" -o "$package_lock_dir/package-lock.json"
 
     echo "Running 'flatpak-node-generator'..."
-    poetry -C '{{tools_dir}}/node' run flatpak-node-generator -o '{{justfile_directory()}}/{{node_sources}}' yarn "$package_dir/yarn.lock"
-    cp "$package_dir/yarn.lock" '{{justfile_directory()}}'
+    poetry -C '{{tools_dir}}/node' run flatpak-node-generator -o '{{justfile_directory()}}/{{node_sources}}' npm "$package_lock_dir/package-lock.json"
 
-    echo '{{node_sources}} and yarn.lock generated successfully'
+    echo '{{node_sources}} generated successfully'

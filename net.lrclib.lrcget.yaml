@@ -26,12 +26,12 @@ modules:
       env:
         CARGO_NET_OFFLINE: 'true'
         XDG_CACHE_HOME: /run/build/lrcget/flatpak-node/cache
+        npm_config_cache: /run/build/lrcget/flatpak-node/npm-cache
     build-commands:
-      - HOME=$PWD yarn config --offline set yarn-offline-mirror $FLATPAK_BUILDER_BUILDDIR/flatpak-node/yarn-mirror
-      - yarn --offline --frozen-lockfile install
+      - npm --offline install --prefix=lrcget
       - install -Dm644 cargo/config .cargo/config.toml
       - cargo fetch --manifest-path src-tauri/Cargo.toml --verbose
-      - yarn --offline run tauri build --no-bundle
+      - npm --offline run tauri build --no-bundle
       - install -Dm755 -t /app/bin src-tauri/target/release/LRCGET
       - install -Dm644 -t /app/share/applications packaging/linux/LRCGET.desktop
       - install -Dm644 -t /app/share/metainfo packaging/linux/LRCGET.metainfo.xml
@@ -43,7 +43,5 @@ modules:
         x-checker-data:
           type: git
           tag-pattern: ^([\d.]+)$
-      - type: file
-        path: yarn.lock
       - node-sources.json
       - cargo-sources.json
