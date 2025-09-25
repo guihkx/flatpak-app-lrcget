@@ -39,7 +39,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/tranxuanthang/lrcget.git
-        commit: 86135e310e47f7c33f715eebb64af21a48c78917
+        commit: c96a64ef44fece434db28beaed51e79022127f9d
+        tag: 1.0.0
         x-checker-data:
           type: git
           tag-pattern: ^([\d.]+)$
