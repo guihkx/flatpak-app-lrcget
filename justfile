@@ -2,7 +2,7 @@
 # Simply run: just
 
 manifest_file := 'net.lrclib.lrcget.yaml'
-upstream_repo := 'https://github.com/tranxuanthang/lrcget'
+upstream_repo := 'https://github.com/guihkx/lrcget'
 cargo_sources := 'cargo-sources.json'
 node_sources  := 'node-sources.json'
 tools_repo    := 'https://github.com/flatpak/flatpak-builder-tools.git'
