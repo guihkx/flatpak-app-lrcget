@@ -1,3 +1,7 @@
+## LRCGET is now on Flathub
+
+https://flathub.org/apps/details/net.lrclib.lrcget
+
 ## About
 
 This repository hosts files required for building a [Flatpak package](https://flatpak.org/) of [LRCGET](https://github.com/tranxuanthang/lrcget).
